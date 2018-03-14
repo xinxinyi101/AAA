@@ -1,0 +1,255 @@
+
+module dds(clk,mstrst,update,CS,SCLK,SDIO,LED);   //定义模块，名称为dds，括号内为7个与外部连接的端口(I/O)      
+  input clk;                                      //定义模块的输入端口
+  output mstrst,update,CS,SCLK,SDIO;              //定义模块的输出端口
+  output LED[1:0];                                //另外设置的输出端口，主要是为了使程序运行时有灯光显示，其存在不影响5个主要端口的时序
+  //端口变量
+  reg mstrst,update,CS,SCLK,SDIO;                 //5个对端口有高低电平1、和低电平0两种状态，因此也是变量，在此需要另做申明
+  reg[7:0] SDIO_state;                            //SDIO的变化跟随SCLK，每组SCLK为8个周期(高低电平)，每个周期中SDIO即可能为0,，也可能为1，因此设定一个8位的二进制数预先储存SDIO的值。
+  //数组变量                    
+  reg[2:0] counta,countb;                         //counta对CS为第几次低电平计数，countb对每次CS为低电平时SCLK达到第几组计数；counta=0,2,...,7; countb=0,1,...,4;
+  reg[5:0] count;                                 //count是counta与countb合成的数；
+  reg[3:0] countc;                                //countc计算的是每组SCLK中，SCLK到达第几个周期；
+  //延时和计数变量
+  reg[4:0] i;                                    
+  reg[24:0] j,jn,jn1,ledc;
+  reg c;
+  reg[3:0] d;
+  //led指示        //LED
+  reg[1:0] LED;
+  
+  reg[2:0] n;
+  
+  
+  initial begin                                  //赋初始值，只执行一次
+    mstrst = 0;
+	 update = 0;
+	 CS = 1;
+	 SCLK = 1;
+	 SDIO = 1; 
+	 
+	 counta = 0;
+	 countb = 0;
+	 countc = 0;
+	 
+	 i=0;
+	 j=0;
+	 jn=0;
+	 c=0;
+	 d=0;
+	 ledc=0;     //LED
+	 LED=0;
+	 n=0;
+  end
+  
+  always@(posedge clk)        //clk的上升沿触发
+   begin
+	   ledc=ledc+1;
+      if(ledc>=20_000_000)    //每隔20000000*20ns=0.4s执行if内的操作；
+	   begin
+	      LED[1:0]=~LED[1:0];  //LED取反，LED的闪烁周期为0.8s；
+			ledc=0;
+	   end
+	end
+  
+  always@(posedge clk)  //在每次clk的上升沿触发块中的操作，由于晶振频率为50M，因此clk每隔20us产生一次上升沿
+	begin                //顺序语句，到end止
+		if(i>=25)         //每隔25*20ns=0.5us执行一次if内的操作
+		begin
+		   i=0;           //将i赋值为0；
+			c=~c;          //c的电平状态取反；那么c的周期为1ns,每1ns有一个上升沿或下降沿。
+		end
+		i=i+1;
+	end                  
+	
+	always@(posedge c)   //c的上升沿触发，根据上个模块可知，每1us触发一次
+	begin
+		if(j>=5000000)    //j为周期时长；当前值为5000_000us,即5s;
+		begin
+		   j=0;
+		end
+		j=j+1;
+	end
+  
+   always@(negedge c)      //c的下降沿触发
+   begin
+      if(j==4999999)begin  //j为对端口高低电平进行控制的触发条件
+		   n=n+1;
+		   if(n==5)begin     //这里另n循环等于4和5，结合后面的仅当(n>=1 && n<=3)时触发对端口的控制，就可以控制周期数为3，且保证n的数据不会溢出。
+			   n=4;
+			end
+		end
+   end
+
+
+	always@(posedge clk)     //clk的上升沿触发
+   begin:mstrst_serial      //设置master reset的时序
+	if(n==0 || n==1)begin    //仅当n=0,1时，即第1,2个周期执行if内的操作，，，这是根据实验时产生的错误来设定的
+      if(j==49)             //第49us，令mstrst为高电平
+   		mstrst = 1;
+		else if(j==299)       //第299us，令mstrst为低电平
+	      mstrst = 0;
+      end
+	end
+  
+    always@(posedge c)      //每1us触发一次,每个jn值对应一次触发
+    begin:CS_serial               //设置CS的时序
+	 if(n>=1 && n<=3)begin
+	   if(j==649)            //进入第1个CS低电平******************************
+		begin
+		   CS=0;
+		   jn=j;              //将j的值649，赋值给jn；jn的值会保持不变，直到下一次对其赋值(即j=1747时)
+		   counta=0; 
+		end
+		
+		else if(j==1747)      //进入第2个CS低电平******************************
+		begin
+		   jn=j;              //jn=j=1747
+		   counta=1;
+			CS=0;
+		end
+			 
+		else if(j==2495)      //进入第3个CS低电平******************************
+		begin
+		   jn=j;              //jn=j=2495
+		   counta=2;
+			CS=0;
+		end
+		
+		else if(j==2495+(d-2)*448 && j<=3589)   //进入第d个CS低电平(第4到第8),j=3589是第5个CS下降
+		begin
+		   jn=j;                                //jn=j=2943,3391,3839,4287,4735
+		   counta=d;                            //给counta赋值，从3到4，前面已赋过0,1,2,,,,,CS本有8段低电平，但实际只需5段
+			CS=0;
+		end
+
+		
+		else if(j==jn+198)      //每次CS保持低电平的时间为198us
+		begin
+			d=d+1;
+			if(d>=5)             //每个周期仅写5个CS
+			   d=0;
+			CS=1;                //令CS为高电平
+		end
+			
+		
+
+    end
+	 end
+	 
+	 
+	 
+	 
+   always@(posedge clk)           //每20ns触发一次
+   begin:SCLK_serial              //设置（DIO_1）SCLK的时序 
+	   
+      if(!mstrst && !CS && n>=1 && n<=3) begin
+			
+
+			//for(countb=0;countb<=4;countb=countb+1)
+			/////countb=0;
+			/////while(countb<=4)
+			
+			if(countb>=5)
+			   countb=0;       //此三者，时序一样，等价？NO!
+			else
+			begin
+			   jn1=jn+countb*40;
+			      for(countc=0;countc<=7;countc=countc+1)
+			      begin
+					   if(j==(jn1+5+4*countc)) begin
+					      SCLK=0;
+							SDIO=SDIO_state[7-countc];     //设置SDIO的电平状态
+						end
+					   else if(j==(jn1+7+4*countc)) begin
+							SCLK=1;
+						end
+					end
+					
+					/////countb=countb+1;
+            countb=countb+1;
+			end
+			
+
+			
+		end
+	end
+					
+	 
+   always@(negedge clk) 
+   begin:SDIO_serial       //设置40组8位二进制数（DIO_2）SDIO的值；
+                           //40=8*5,8代表有8段CS低电平，5代表每段CS低电平中有5组SCLK，而每组SCLK都对应一个SDIO_state值；
+   if(!CS && n>=1 && n<=3)
+   begin
+	   count[5:0]={counta[2:0],countb[2:0]};     //将2个3位数counta与countb，合成为1个6位数count,其高三位为counta的值，低三位为countb的值；
+	   case (count[5:0])
+		  6'b000000:  SDIO_state<=8'b00000011;     //counta=0,countb=0;第1个CS中的第1个SCLK
+		  6'b000001:  SDIO_state<=8'b00000001;     //counta=0,countb=1;第1个CS中的第2个SCLK
+		  6'b000010:  SDIO_state<=8'b00000101;     //counta=0,countb=2;第1个CS中的第3个SCLK
+		  6'b000011:  SDIO_state<=8'b00100001;     //counta=0,countb=3;第1个CS中的第4个SCLK
+		  6'b000100:  SDIO_state<=8'b00100000;     //counta=0,countb=4;第1个CS中的第5个SCLK
+		  
+		  6'b001000:  SDIO_state<=8'b00000011;     //counta=1,countb=0;第2个CS中的第1个SCLK
+		  6'b001001:  SDIO_state<=8'b00000000;     //counta=1,countb=1;第2个CS中的第2个SCLK
+		  6'b001010:  SDIO_state<=8'b00000101;     //counta=1,countb=2;第2个CS中的第3个SCLK
+		  6'b001011:  SDIO_state<=8'b00100001;     //counta=1,countb=3;第2个CS中的第4个SCLK
+		  6'b001100:  SDIO_state<=8'b00100000;     //counta=1,countb=4;第2个CS中的第5个SCLK
+		  
+		  6'b010000:  SDIO_state<=8'b00000001;     //counta=2,countb=0;第3个CS中的第1个SCLK
+		  6'b010001:  SDIO_state<=8'b00000000;     //counta=2,countb=1;第3个CS中的第2个SCLK
+		  6'b010010:  SDIO_state<=8'b10000000;     //counta=2,countb=2;第3个CS中的第3个SCLK
+		  6'b010011:  SDIO_state<=8'b00001000;     //counta=2,countb=3;第3个CS中的第4个SCLK
+		  6'b010100:  SDIO_state<=8'b00000000;     //counta=2,countb=4;第3个CS中的第5个SCLK
+		  
+		  6'b011000:  SDIO_state<=8'b00000010;     //counta=3,countb=0;第4个CS中的第1个SCLK
+		  6'b011001:  SDIO_state<=8'b00000000;     //counta=3,countb=1;第4个CS中的第2个SCLK
+		  6'b011010:  SDIO_state<=8'b00001111;     //counta=3,countb=2;第4个CS中的第3个SCLK
+		  6'b011011:  SDIO_state<=8'b01111000;     //counta=3,countb=3;第4个CS中的第4个SCLK
+		  6'b011100:  SDIO_state<=8'b01111100;     //counta=3,countb=4;第4个CS中的第5个SCLK
+		  
+		  6'b100000:  SDIO_state<=8'b00001011;     //counta=4,countb=0;第5个CS中的第1个SCLK
+		  6'b100001:  SDIO_state<=8'b00110000;     //counta=4,countb=1;第5个CS中的第2个SCLK
+		  6'b100010:  SDIO_state<=8'b00000000;     //counta=4,countb=2;第5个CS中的第3个SCLK
+		  6'b100011:  SDIO_state<=8'b00000000;     //counta=4,countb=3;第5个CS中的第4个SCLK
+		  6'b100100:  SDIO_state<=8'b00000000;     //counta=4,countb=4;第5个CS中的第5个SCLK
+		  /*
+		  6'b101000:  SDIO_state<=8'b00001101;     //counta=5,countb=0;第6个CS中的第1个SCLK
+		  6'b101001:  SDIO_state<=8'b00010000;     //counta=5,countb=1;第6个CS中的第2个SCLK
+		  6'b101010:  SDIO_state<=8'b00000000;     //counta=5,countb=2;第6个CS中的第3个SCLK
+		  6'b101011:  SDIO_state<=8'b00000000;     //counta=5,countb=3;第6个CS中的第4个SCLK
+		  6'b101100:  SDIO_state<=8'b00000000;     //counta=5,countb=4;第6个CS中的第5个SCLK
+		  
+		  6'b110000:  SDIO_state<=8'b00001111;     //counta=6,countb=0;第7个CS中的第1个SCLK
+		  6'b110001:  SDIO_state<=8'b00100000;     //counta=6,countb=1;第7个CS中的第2个SCLK
+		  6'b110010:  SDIO_state<=8'b00000000;     //counta=6,countb=2;第7个CS中的第3个SCLK
+		  6'b110011:  SDIO_state<=8'b00000000;     //counta=6,countb=3;第7个CS中的第4个SCLK
+		  6'b110100:  SDIO_state<=8'b00000000;     //counta=6,countb=4;第7个CS中的第5个SCLK
+		  
+		  6'b111000:  SDIO_state<=8'b00010001;     //counta=7,countb=0;第8个CS中的第1个SCLK
+		  6'b111001:  SDIO_state<=8'b01000000;     //counta=7,countb=1;第8个CS中的第2个SCLK
+		  6'b111010:  SDIO_state<=8'b00000000;     //counta=7,countb=2;第8个CS中的第3个SCLK
+		  6'b111011:  SDIO_state<=8'b00000000;     //counta=7,countb=3;第8个CS中的第4个SCLK
+		  6'b111100:  SDIO_state<=8'b00000000;     //counta=7,countb=4;第8个CS中的第5个SCLK
+		  */
+		  default: SDIO_state<=8'bx;
+		endcase
+    end
+  end
+		  
+		  always@(posedge clk)            //clk上升沿触发
+      begin:update_serial               //设置(DIO_3)update的时序
+		if(n>=1 && n<=3)begin
+
+		      if(j>=(847+200) && j<=(847+200+250))                 //在第1个CS结束后的200us~(200+250)us，update为高电平
+               update=1;
+	         else if(j>=(1945+34)&&j<=(1945+34+250))              //在第2个CS结束后的34us~(34+250)us,update为高电平
+		         update=1;
+		      else if(j>=(4933+34)&&j<=(4933+34+250))              //在第8个CS结束后的34us~(34+250)us,update为高电平
+		         update=1;
+		      else 
+	            update=0;                                         //在其他时间段，update为低电平
+		end
+
+      end
+
+endmodule            //结束模块
